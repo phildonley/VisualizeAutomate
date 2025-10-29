@@ -559,6 +559,11 @@ class VisualizeDriver:
         log.info("[WIZ] Allowing dialog to stabilize...")
         time.sleep(2.0)
         
+        # Focus the address bar so paste goes to the right place
+        log.info("[WIZ] Focusing address bar (Alt+D)...")
+        keyboard.send("alt+d")
+        time.sleep(0.4)
+        
         pyperclip.copy(OUTPUT_ROOT)
         keyboard.send("ctrl+v")
         time.sleep(1.5)
