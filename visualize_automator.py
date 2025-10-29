@@ -386,7 +386,7 @@ class VisualizeDriver:
         
         # Wait for Import Settings dialog and click OK
         log.info("[OPEN] Waiting for Import Settings dialog...")
-        time.sleep(60)  # Wait for dialog to appear
+        time.sleep(90)  # Wait for dialog to appear
         
         if self._has("import_ok_btn"):
             log.info("[OPEN] Clicking Import Settings OK...")
@@ -396,7 +396,7 @@ class VisualizeDriver:
         
         # Wait for file to load
         log.info("[OPEN] Waiting for file to load...")
-        time.sleep(20)
+        time.sleep(10)
         
         # Focus viewport and click to ensure it's active
         log.info("[OPEN] Focusing viewport...")
@@ -430,9 +430,12 @@ class VisualizeDriver:
 
         # Open the import dialog
         self._click("camera_tab", d=1)
+        time.sleep(2.0)
         self._click("plus_tab", d=1)
+        time.sleep(2.0)
         self._click("import_cameras_btn", d=0.8)  # single click, short delay
-
+        time.sleep(0.2) 
+        
         # Wait for the File Open dialog to be foreground
         log.info("[CAM] Waiting for 'Open' dialog to foreground...")
         if not _wait_for_dialog_title(("Open", "Select", "Browse"), timeout=12):
