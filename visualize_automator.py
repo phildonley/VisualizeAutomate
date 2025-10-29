@@ -30,6 +30,24 @@ OUTPUT_ROOT = r"C:\Users\Phillip.Donley\Downloads\Render Folder"
 REQUIRED_CAM_SUFFIXES = ("103", "105", "107", "109", "111")
 VK_F = 0x46
 
+# --- Focus/Window helpers ---
+def _get_fg_title():
+    try:
+        hwnd = win32gui.GetForegroundWindow()
+        return win32gui.GetWindowText(hwnd) or ""
+    except Exception:
+        return ""
+
+def _wait_for_dialog_title(substrs=("Open",), timeout=20.0, poll=0.25):
+    """Wait until the foreground window title contains any of substrs."""
+    end = time.time() + timeout
+    while time.time() < end:
+        t = _get_fg_title()
+        if any(s.lower() in t.lower() for s in substrs):
+            return True
+        time.sleep(poll)
+    return False
+
 # Updated with new output folder steps
 GUIDED_STEPS = [
     "import_ok_btn",           # 1. Import Settings OK button
@@ -410,23 +428,31 @@ class VisualizeDriver:
         if any(not self._has(p) for p in req):
             raise RuntimeError(f"Missing: {req}")
 
+        # Open the import dialog
         self._click("camera_tab", d=1)
         self._click("plus_tab", d=1)
-        self._click("import_cameras_btn", d=3)  # Wait for import dialog to open
-        
-        # Make sure Visualize has focus
-        focus_visualize()
-        time.sleep(1)
+        self._click("import_cameras_btn", d=0.8)  # single click, short delay
 
+        # Wait for the File Open dialog to be foreground
+        log.info("[CAM] Waiting for 'Open' dialog to foreground...")
+        if not _wait_for_dialog_title(("Open", "Select", "Browse"), timeout=12):
+            log.warn("[CAM] Open dialog not detected by title; proceeding cautiously after delay")
+            time.sleep(2.0)
+
+        # Ensure the 'File name' field gets focus: Alt+N targets that control in common dialogs
+        log.info("[CAM] Focusing 'File name' box (Alt+N)...")
+        keyboard.send("alt+n"); time.sleep(0.4)
+
+        # Paste the camera list
         cs = "\"103\" \"105\" \"107\" \"109\" \"111\""
-        pyperclip.copy(cs)
-        log.info(f"[CAM] Pasting: {cs}")
-        time.sleep(1)
-        keyboard.send("ctrl+v")
-        time.sleep(2)
+        pyperclip.copy(cs); time.sleep(0.2)
+        log.info(f"[CAM] Pasting camera list: {cs}")
+        keyboard.send("ctrl+v"); time.sleep(0.6)
+
+        # Confirm open
         log.info("[CAM] Pressing Enter to import...")
-        keyboard.send("enter")
-        time.sleep(3)
+        keyboard.send("enter"); time.sleep(3.0)
+
         log.info("[CAM] ✓")
 
     def del_old_cams(self):
@@ -491,17 +517,39 @@ class VisualizeDriver:
         time.sleep(1)
         log.info(f"[WIZ] Job name set: {jn}")
         
-        # === OUTPUT FOLDER - TAB + ENTER (WORKING METHOD) ===
-        log.info("[WIZ] Output...")
-        self._click("output_folder_btn", d=2)
-        pyperclip.copy(OUTPUT_ROOT)
-        time.sleep(0.5)
-        keyboard.send("ctrl+v")
-        time.sleep(1.0)
-        keyboard.send("tab")  # Tab to Select Folder button
-        time.sleep(0.5)
-        keyboard.send("enter")  # Press Enter to confirm
-        time.sleep(3.0)
+        # === OUTPUT FOLDER ===
+        log.info("[WIZ] Setting output folder...")
+        self._click("output_folder_btn", d=0.8)
+
+        log.info("[WIZ] Waiting for folder dialog (title contains 'Browse' or 'Select')...")
+        if not _wait_for_dialog_title(("Browse", "Select", "Folder"), timeout=12):
+            log.warn("[WIZ] Folder dialog not detected by title; adding extra delay")
+            time.sleep(2.0)
+
+        # Robust: focus path/address box, paste, navigate
+        log.info(f"[WIZ] Navigating to: {OUTPUT_ROOT}")
+        keyboard.send("alt+d"); time.sleep(0.4)
+        pyperclip.copy(OUTPUT_ROOT); time.sleep(0.1)
+        keyboard.send("ctrl+v"); time.sleep(0.5)
+        keyboard.send("enter");   time.sleep(0.8)
+
+        # Confirm selection WITHOUT changing recorded coordinates
+        log.info("[WIZ] Confirm Select Folder (try Enter, else click recorded button)")
+        keyboard.send("enter"); time.sleep(1.2)
+
+        if _wait_for_dialog_title(("Browse", "Select", "Folder"), timeout=1.2):
+            # Dialog still present: use the recorded button click (no Y hacks)
+            if self._has("folder_select_btn"):
+                x, y = self.io.get("folder_select_btn")
+                log.info(f"[WIZ] Clicking folder_select_btn at ({x}, {y})")
+                mouse.move(x, y, absolute=True, duration=0.1)
+                time.sleep(0.2)
+                mouse.click()
+                time.sleep(1.2)
+            else:
+                log.warn("[WIZ] No folder_select_btn recorded; relying on Enter only")
+        
+        log.info("[WIZ] ✓ Output folder set")
         
         # Select cameras
         log.info("[WIZ] Selecting cameras...")
