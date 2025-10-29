@@ -532,10 +532,6 @@ class VisualizeDriver:
         log.info("[WIZ] Allowing dialog to stabilize...")
         time.sleep(2.0)
         
-        log.info("[WIZ] Focusing path box (Alt+D)...")
-        keyboard.send("alt+d")
-        time.sleep(0.8)
-        
         pyperclip.copy(OUTPUT_ROOT)
         keyboard.send("ctrl+v")
         time.sleep(1.5)
@@ -563,11 +559,15 @@ class VisualizeDriver:
         # Select cameras
         log.info("[WIZ] Selecting cameras...")
         self._click("cameras_dropdown", d=2)
+        time.sleep(0.4)
         log.info("[WIZ] Clicking Select All...")
         self._click("cameras_select_all", d=2)
+        time.sleep(0.4)
         log.info("[WIZ] Closing dropdown...")
+        time.sleep(0.4)
         self._click("cameras_dropdown_close", d=2)
         log.info("[WIZ] ✓ All cameras selected")
+        time.sleep(5.0)
         
         # Start render
         log.info("[WIZ] Starting render...")
