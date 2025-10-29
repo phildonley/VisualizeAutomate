@@ -522,38 +522,44 @@ class VisualizeDriver:
         
         # === OUTPUT FOLDER ===
         log.info("[WIZ] Setting output folder...")
-        self._click("output_folder_btn", d=0.8)
-
-        log.info("[WIZ] Waiting for folder dialog (title contains 'Browse' or 'Select')...")
-        if not _wait_for_dialog_title(("Browse", "Select", "Folder"), timeout=12):
-            log.warn("[WIZ] Folder dialog not detected by title; adding extra delay")
-            time.sleep(2.0)
-
-        # Robust: focus path/address box, paste, navigate
-        log.info(f"[WIZ] Navigating to: {OUTPUT_ROOT}")
-        keyboard.send("alt+d"); time.sleep(0.4)
-        pyperclip.copy(OUTPUT_ROOT); time.sleep(0.1)
-        keyboard.send("ctrl+v"); time.sleep(0.5)
-        keyboard.send("enter");   time.sleep(0.8)
-
-        # Confirm selection WITHOUT changing recorded coordinates
-        log.info("[WIZ] Confirm Select Folder (try Enter, else click recorded button)")
-        keyboard.send("enter"); time.sleep(1.2)
-
-        if _wait_for_dialog_title(("Browse", "Select", "Folder"), timeout=1.2):
-            # Dialog still present: use the recorded button click (no Y hacks)
+        self._click("output_folder_btn", d=1.5)   # give dialog time to open
+        
+        log.info("[WIZ] Waiting for folder dialog to become foreground...")
+        if not _wait_for_dialog_title(("Browse", "Select", "Folder"), timeout=20):
+            log.warn("[WIZ] Dialog not detected; adding fallback wait")
+            time.sleep(4)
+        
+        log.info("[WIZ] Allowing dialog to stabilize...")
+        time.sleep(2.0)
+        
+        log.info("[WIZ] Focusing path box (Alt+D)...")
+        keyboard.send("alt+d")
+        time.sleep(0.8)
+        
+        pyperclip.copy(OUTPUT_ROOT)
+        keyboard.send("ctrl+v")
+        time.sleep(1.5)
+        
+        log.info("[WIZ] Navigating to folder...")
+        keyboard.send("enter")
+        time.sleep(2.5)
+        
+        log.info("[WIZ] Confirming Select Folder via Enter...")
+        keyboard.send("enter")
+        time.sleep(2.0)
+        
+        if _wait_for_dialog_title(("Browse", "Select", "Folder"), timeout=2.0):
             if self._has("folder_select_btn"):
                 x, y = self.io.get("folder_select_btn")
                 log.info(f"[WIZ] Clicking folder_select_btn at ({x}, {y})")
                 mouse.move(x, y, absolute=True, duration=0.1)
-                time.sleep(0.2)
+                time.sleep(0.4)
                 mouse.click()
-                time.sleep(1.2)
-            else:
-                log.warn("[WIZ] No folder_select_btn recorded; relying on Enter only")
+                time.sleep(2.5)
         
         log.info("[WIZ] ✓ Output folder set")
-        
+
+
         # Select cameras
         log.info("[WIZ] Selecting cameras...")
         self._click("cameras_dropdown", d=2)
