@@ -512,10 +512,29 @@ class VisualizeDriver:
         keyboard.send("ctrl+r")
         time.sleep(3)
         
-        # Click Next 4 times
-        log.info("[WIZ] Clicking Next 4x...")
+        # Click Next 4x (preview + Enter fallback each step)
+        log.info("[WIZ] Clicking Next 4x (with preview + Enter fallback)...")
         for i in range(4):
-            self._click("wizard_next_or_render", d=2)
+            if not self._has("wizard_next_or_render"):
+                log.error("[WIZ] No wizard_next_or_render point saved"); break
+        
+            # Make sure the wizard has focus
+            focus_visualize()
+            time.sleep(0.4)
+        
+            # Preview mouse so you can visually confirm it's on the Next/Render button
+            x, y = self.io.get("wizard_next_or_render")
+            mouse.move(x, y, absolute=True, duration=0.1)
+            time.sleep(0.4)
+        
+            # Primary click
+            mouse.click()
+            time.sleep(0.9)
+        
+            # Keyboard fallback (if click didn’t register)
+            keyboard.send("enter")
+            time.sleep(1.2)
+        
             log.info(f"[WIZ] Next {i+1}/4")
         
         # Set job name
