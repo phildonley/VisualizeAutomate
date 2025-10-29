@@ -1,5 +1,5 @@
 # VisualizeAutomate
-The Standard version of Visualize does not have access to the API, so created this Python script that records the step by step process of the rendering process. 
+The Standard version of Solidworks Visualize does not have access to the API, so I created this Python script that records the step by step process of the rendering process. 
 ## Command Format
 python visualize_automator.py --exec "<path_to_your_VAULT_export.xlsx>" --vault "vault_name"
 ## Where the script expects to find the CAD models:
