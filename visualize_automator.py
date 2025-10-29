@@ -19,6 +19,15 @@ import win32con
 import pandas as pd
 import psutil
 
+# Try to import COM for PDM support
+try:
+    import pythoncom
+    import win32com.client
+    HAVE_COM = True
+except ImportError:
+    HAVE_COM = False
+    print("Warning: COM support not available - PDM functionality disabled")
+
 # Configuration
 OUTPUT_ROOT = r"C:\Users\Phillip.Donley\Downloads\Render Folder"
 UI_POINTS_PATH = "ui_points.json"
@@ -97,6 +106,162 @@ class UIPoints:
     def has(self, name):
         """Check if a UI point exists"""
         return name in self.points
+    
+    def save(self):
+        """Save coordinates to JSON file"""
+        with open(self.path, 'w') as f:
+            json.dump(self.points, f, indent=2)
+        log.info(f"Saved {len(self.points)} UI points to {self.path}")
+    
+    def set_point(self, name, x, y):
+        """Set coordinates for a UI element"""
+        self.points[name] = {"x": x, "y": y}
+
+class GuidedRecorder:
+    """
+    Interactive mode to capture UI coordinates
+    Controls:
+    - Ctrl+Shift+Space: Capture current point and advance
+    - Ctrl+Shift+Right: Skip forward without capturing
+    - Ctrl+Shift+Left: Go back one step
+    - Ctrl+Shift+Q: Save and quit
+    """
+    def __init__(self, ui_points):
+        self.ui = ui_points
+        self.steps = AUTOMATION_STEPS
+        self.current_index = 0
+        self.running = True
+        
+        # Find first uncaptured step
+        for i, step in enumerate(self.steps):
+            if not self.ui.has(step):
+                self.current_index = i
+                break
+        else:
+            self.current_index = len(self.steps)  # All captured
+        
+        self._bind_keys()
+    
+    def _bind_keys(self):
+        """Bind keyboard shortcuts"""
+        keyboard.add_hotkey("ctrl+shift+space", self.capture_current)
+        keyboard.add_hotkey("ctrl+shift+right", self.skip_forward)
+        keyboard.add_hotkey("ctrl+shift+left", self.skip_back)
+        keyboard.add_hotkey("ctrl+shift+q", self.save_and_quit)
+    
+    def capture_current(self):
+        """Capture current mouse position and advance"""
+        if self.current_index >= len(self.steps):
+            log.warn("All steps captured!")
+            return
+        
+        step_name = self.steps[self.current_index]
+        x, y = mouse.get_position()
+        self.ui.set_point(step_name, x, y)
+        log.info(f"✓ [{self.current_index+1}/{len(self.steps)}] {step_name} at ({x}, {y})")
+        self.current_index += 1
+    
+    def skip_forward(self):
+        """Skip to next step without capturing"""
+        if self.current_index < len(self.steps) - 1:
+            self.current_index += 1
+            log.info(f"→ Skipped to step {self.current_index+1}/{len(self.steps)}")
+        else:
+            log.warn("Already at last step")
+    
+    def skip_back(self):
+        """Go back one step"""
+        if self.current_index > 0:
+            self.current_index -= 1
+            log.info(f"← Back to step {self.current_index+1}/{len(self.steps)}")
+        else:
+            log.warn("Already at first step")
+    
+    def save_and_quit(self):
+        """Save captured points and exit"""
+        self.ui.save()
+        self.running = False
+        log.info("✓ Saved and exiting!")
+    
+    def run(self):
+        """Run the guided capture mode"""
+        log.info("="*80)
+        log.info("=== GUIDED UI CAPTURE MODE ===")
+        log.info("="*80)
+        log.info("")
+        log.info("CONTROLS:")
+        log.info("  Ctrl+Shift+Space  = Capture current point & advance")
+        log.info("  Ctrl+Shift+Right  = Skip forward (don't capture)")
+        log.info("  Ctrl+Shift+Left   = Go back one step")
+        log.info("  Ctrl+Shift+Q      = Save & quit")
+        log.info("")
+        log.info("STEPS TO CAPTURE:")
+        for i, step in enumerate(self.steps, 1):
+            status = "✓" if self.ui.has(step) else " "
+            log.info(f"  [{status}] {i:2d}. {step}")
+        log.info("")
+        log.info("="*80)
+        
+        while self.running:
+            if self.current_index < len(self.steps):
+                step_name = self.steps[self.current_index]
+                log.info(f">>> STEP {self.current_index+1}/{len(self.steps)}: {step_name}")
+            else:
+                log.info(">>> ALL STEPS CAPTURED! Press Ctrl+Shift+Q to save and quit.")
+            time.sleep(3)
+
+class PDMClient:
+    """SOLIDWORKS PDM vault client for file management"""
+    def __init__(self, vault_name):
+        if not HAVE_COM:
+            raise RuntimeError("COM support not available for PDM")
+        self.vault_name = vault_name
+        self.vault = None
+        
+    def login(self):
+        """Login to PDM vault"""
+        log.info(f"[PDM] Logging into vault: {self.vault_name}")
+        try:
+            pythoncom.CoInitialize()
+            self.vault = win32com.client.Dispatch("ConisioLib.EdmVault")
+            self.vault.LoginAuto(self.vault_name, 0)
+            log.info("[PDM] Login successful")
+        except Exception as e:
+            log.error(f"[PDM] Login failed: {e}")
+            raise
+    
+    def ensure_local(self, file_path):
+        """Ensure file is available locally, download if needed"""
+        if not self.vault:
+            return file_path
+            
+        try:
+            # Get folder and file interfaces
+            folder_path = os.path.dirname(file_path)
+            file_name = os.path.basename(file_path)
+            
+            folder = self.vault.GetFolderFromPath(folder_path)
+            if not folder:
+                log.warn(f"[PDM] Folder not in vault: {folder_path}")
+                return file_path
+            
+            file = folder.GetFile(file_name)
+            if not file:
+                log.warn(f"[PDM] File not in vault: {file_name}")
+                return file_path
+            
+            # Get latest version
+            log.info(f"[PDM] Getting latest version of: {file_name}")
+            file.GetFileCopy(0)  # 0 = parent window handle
+            
+            # Return local cache path
+            local_path = file.GetLocalPath(folder.ID)
+            log.info(f"[PDM] Local path: {local_path}")
+            return local_path if local_path else file_path
+            
+        except Exception as e:
+            log.warn(f"[PDM] Error getting file: {e}")
+            return file_path
 
 class VisualizeAutomation:
     """Main automation driver for SOLIDWORKS Visualize"""
@@ -371,7 +536,7 @@ def sanitize_job_name(tms, part):
     
     return job_name
 
-def process_row(automation, row_data):
+def process_row(automation, row_data, pdm_client=None):
     """Process a single row from Excel"""
     part = str(row_data.get("A", "")).strip()
     tms = str(row_data.get("K", "")).strip()
@@ -381,16 +546,28 @@ def process_row(automation, row_data):
         log.warn(f"Skipping row - no valid filepath")
         return False
     
+    # Handle PDM file if client is available
+    actual_filepath = filepath
+    if pdm_client:
+        try:
+            local_path = pdm_client.ensure_local(filepath)
+            if local_path and os.path.exists(local_path):
+                actual_filepath = local_path
+                log.info(f"[PDM] Using local cache: {actual_filepath}")
+        except Exception as e:
+            log.warn(f"[PDM] Failed to get file from vault: {e}")
+            # Continue with original path
+    
     job_name = sanitize_job_name(tms, part)
     
     log.info("="*80)
     log.info(f"Processing job: {job_name}")
-    log.info(f"File: {filepath}")
+    log.info(f"File: {actual_filepath}")
     log.info("="*80)
     
     try:
         # Execute automation sequence
-        automation.open_file(filepath)
+        automation.open_file(actual_filepath)
         automation.import_cameras()
         automation.delete_old_cameras()
         automation.center_cameras()
@@ -461,8 +638,14 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 EXAMPLES:
+  # Capture UI points in guided mode
+  python visualize_automator.py --guided-capture
+  
   # Run automation on Excel file
   python visualize_automator.py --excel "C:\\path\\to\\parts.xlsx"
+  
+  # Run with PDM vault
+  python visualize_automator.py --excel "C:\\path\\to\\parts.xlsx" --pdm-vault "YourVaultName"
   
   # Run with verbose logging
   python visualize_automator.py --excel "C:\\path\\to\\parts.xlsx" --verbose
@@ -472,12 +655,19 @@ EXAMPLES:
         """
     )
     
-    parser.add_argument("--excel", type=str,
-                       help="Path to Excel file with parts list")
+    # Create mutually exclusive group for modes
+    mode_group = parser.add_mutually_exclusive_group()
+    mode_group.add_argument("--guided-capture", action="store_true",
+                           help="Enter guided mode to capture UI coordinates")
+    mode_group.add_argument("--excel", type=str,
+                           help="Path to Excel file with parts list")
+    mode_group.add_argument("--test-click", type=str,
+                           help="Test clicking a specific UI element")
+    
     parser.add_argument("--verbose", action="store_true",
                        help="Enable verbose logging")
-    parser.add_argument("--test-click", type=str,
-                       help="Test clicking a specific UI element")
+    parser.add_argument("--pdm-vault", type=str,
+                       help="PDM vault name for file retrieval")
     
     args = parser.parse_args()
     
@@ -522,11 +712,32 @@ EXAMPLES:
         log.error(f"Excel file not found: {args.excel}")
         sys.exit(1)
     
+    # Initialize PDM client if requested
+    pdm_client = None
+    if args.pdm_vault:
+        if not HAVE_COM:
+            log.error("COM support not available - cannot use PDM vault")
+            log.error("Make sure pywin32 is installed: pip install pywin32")
+            sys.exit(1)
+        
+        try:
+            pdm_client = PDMClient(args.pdm_vault)
+            pdm_client.login()
+            log.info(f"[PDM] Connected to vault: {args.pdm_vault}")
+        except Exception as e:
+            log.error(f"[PDM] Failed to connect to vault: {e}")
+            response = input("Continue without PDM? (y/n): ")
+            if response.lower() != 'y':
+                sys.exit(1)
+            pdm_client = None
+    
     # Process Excel file
     log.info("="*80)
     log.info("STARTING AUTOMATION")
     log.info(f"Excel file: {args.excel}")
     log.info(f"Output root: {OUTPUT_ROOT}")
+    if pdm_client:
+        log.info(f"PDM vault: {args.pdm_vault}")
     log.info("="*80)
     
     success_count = 0
@@ -535,7 +746,7 @@ EXAMPLES:
     try:
         for row in read_excel(args.excel):
             try:
-                if process_row(automation, row):
+                if process_row(automation, row, pdm_client):
                     success_count += 1
                 else:
                     error_count += 1
