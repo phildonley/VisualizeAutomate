@@ -385,14 +385,22 @@ class VisualizeDriver:
         time.sleep(10)  # Wait for file to start opening
         
         # Wait for Import Settings dialog and click OK
-        log.info("[OPEN] Waiting for Import Settings dialog...")
-        time.sleep(90)  # Wait for dialog to appear
+        log.info("[OPEN] Waiting for Import Settings dialog to fully appear...")
+        time.sleep(90)  # keep your long wait; Visualize needs it
         
         if self._has("import_ok_btn"):
+            # OPTIONAL: preview-move so you can visually verify the saved point is right
+            x, y = self.io.get("import_ok_btn")
+            log.info(f"[OPEN] Preview OK at ({x},{y})")
+            mouse.move(x, y, absolute=True, duration=0.1)
+            time.sleep(0.6)  # brief pause so you can see cursor over the button
+        
             log.info("[OPEN] Clicking Import Settings OK...")
-            focus_visualize()
-            time.sleep(2)
-            self._click("import_ok_btn", d=3)
+            mouse.click()
+            time.sleep(2.5)  # give the modal time to close
+        else:
+            log.warn("[OPEN] No import_ok_btn saved; skipping click")
+
         
         # Wait for file to load
         log.info("[OPEN] Waiting for file to load...")
@@ -565,9 +573,9 @@ class VisualizeDriver:
         time.sleep(0.4)
         log.info("[WIZ] Closing dropdown...")
         time.sleep(0.4)
-        self._click("cameras_dropdown_close", d=2)
+        keyboard.send("esc")
         log.info("[WIZ] ✓ All cameras selected")
-        time.sleep(5.0)
+        time.sleep(8.0)
         
         # Start render
         log.info("[WIZ] Starting render...")
