@@ -20,3 +20,20 @@ C (if present)	Revision	A, B, etc.
 <Item>.SLDASM
 <Item>.SLDDRW
 <Item>.SLDPRT / with GT, SGT, PLT suffix cleanup
+
+## 🟦 Vault Mode Quick Debug Commands
+Validate Vault file lookup without opening Visualize:
+python visualize_automator.py --vault-test "<excel_file_path>"
+
+### Just show the matched Vault file paths:
+python visualize_automator.py --vault-print "<excel_file_path>"
+
+## 🟦 The Other Mode for Comparison (CSV Mode)
+
+If you already have absolute paths and don't want vault lookup:
+
+python visualize_automator.py --exec "<some_regular_image_or_cad_list.csv>"
+
+Mode	          Use When
+--vault	        You exported from PDM Search and want it to auto-locate files
+--exec only	    You already have direct folder paths in the CSV
