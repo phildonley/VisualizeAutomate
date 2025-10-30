@@ -7,23 +7,22 @@ PRODUCTION VERSION - Enhanced with:
 ✓ Improved close sequence with retries
 ✓ Longer waits for dialog opening
 ✓ All previous fixes maintained
-✓ DPI awareness to prevent coordinate scaling issues
+✓ DPI awareness to prevent coordinate scaling
+✓ Fixed render wizard timing
+✓ Alt+F close sequence with proper waits
 """
 
 # CRITICAL: Set DPI awareness BEFORE any other imports
 import ctypes
-import sys
 try:
-    # Try Windows 10 method first
     ctypes.windll.shcore.SetProcessDpiAwareness(2)  # PROCESS_PER_MONITOR_DPI_AWARE
 except:
     try:
-        # Fall back to older method
         ctypes.windll.user32.SetProcessDPIAware()
     except:
         pass
 
-import os, re, json, time, argparse
+import os, re, sys, json, time, argparse
 from dataclasses import dataclass
 from typing import Dict, Optional
 
@@ -353,20 +352,8 @@ class VisualizeDriver:
     def _click(self, l, d=1.0):
         if not self._has(l): raise RuntimeError(f"No {l}")
         x, y = self.io.get(l)
-        
-        # Log the coordinates we're about to use
-        log.dbg(f"[CLICK] {l} at ({x}, {y})")
-        
-        # Move and click
         mouse.move(x, y, absolute=True, duration=0.1)
         time.sleep(0.2)
-        
-        # Verify position if in verbose mode
-        if log.v:
-            actual_x, actual_y = mouse.get_position()
-            if abs(actual_x - x) > 5 or abs(actual_y - y) > 5:
-                log.warn(f"[CLICK] Position mismatch for {l}! Expected ({x}, {y}), got ({actual_x}, {actual_y})")
-        
         mouse.click()
         time.sleep(d)
     
@@ -602,7 +589,7 @@ class VisualizeDriver:
         log.info("[WIZ] ✓ Output folder set")
 
 
-        # Select cameras (still on same page)
+        # Select cameras
         log.info("[WIZ] Selecting cameras...")
         self._click("cameras_dropdown", d=2)
         time.sleep(0.4)
@@ -613,17 +600,17 @@ class VisualizeDriver:
         time.sleep(0.4)
         keyboard.send("esc")
         log.info("[WIZ] ✓ All cameras selected")
-        time.sleep(2.0)  # Let the camera selection register
+        time.sleep(8.0)
         
-        # Click Render button (same location as Next button)
-        log.info("[WIZ] Clicking Render button to start...")
+        # Start render
+        log.info("[WIZ] Starting render...")
         self._click("wizard_next_or_render", d=3)
         log.info("[WIZ] ✓ Render started!")
 
     def close(self):
         """
         Close render window and project using Alt+F menu approach.
-        Uses proper focus and timing to ensure reliable closing.
+        IMPORTANT: This is called AFTER renders complete!
         """
         log.info("[CLOSE] Starting close sequence...")
         
@@ -648,7 +635,6 @@ class VisualizeDriver:
         if self._has("render_no_save_btn"):
             log.info("[CLOSE] Clicking 'No' button for render window...")
             try:
-                # Give button time to appear and be clickable
                 time.sleep(1.0)
                 self._click("render_no_save_btn", d=2.0)
                 log.info("[CLOSE] ✓ Render window closed via button")
@@ -686,7 +672,6 @@ class VisualizeDriver:
         if self._has("project_no_save_btn"):
             log.info("[CLOSE] Clicking 'No' button for project...")
             try:
-                # Give button time to appear and be clickable
                 time.sleep(1.0)
                 self._click("project_no_save_btn", d=2.0)
                 log.info("[CLOSE] ✓ Project closed via button")
