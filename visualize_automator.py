@@ -622,70 +622,88 @@ class VisualizeDriver:
 
     def close(self):
         """
-        Enhanced close sequence with retries.
-        Closes render window and project without saving.
+        Close render window and project using Alt+F menu approach.
+        Uses proper focus and timing to ensure reliable closing.
         """
         log.info("[CLOSE] Starting close sequence...")
         
         # === STEP 1: Close render window ===
-        log.info("[CLOSE] Closing render window...")
-        for attempt in range(3):
-            keyboard.send("ctrl+w")
-            time.sleep(2)
-            
-            # Try clicking No button if we have it
-            if self._has("render_no_save_btn"):
-                log.info(f"[CLOSE] Clicking render No button (attempt {attempt+1})...")
-                try:
-                    self._click("render_no_save_btn", d=2)
-                    log.info("[CLOSE] ✓ Render window closed")
-                    break
-                except:
-                    log.warn("[CLOSE] Click failed, retrying...")
-            else:
-                # Fallback: press N key
-                log.info(f"[CLOSE] Pressing N key (attempt {attempt+1})...")
-                keyboard.send("n")
-                time.sleep(2)
-                break
+        log.info("[CLOSE] Step 1: Closing render window...")
         
-        # Small pause between closes
-        time.sleep(1)
+        # Ensure Visualize has focus
+        focus_visualize()
+        time.sleep(1.0)
         
-        # === STEP 2: Close project ===
-        log.info("[CLOSE] Closing project...")
-        for attempt in range(3):
-            keyboard.send("ctrl+w")
-            time.sleep(2)
-            
-            # Try clicking No button if we have it
-            if self._has("project_no_save_btn"):
-                log.info(f"[CLOSE] Clicking project No button (attempt {attempt+1})...")
-                try:
-                    self._click("project_no_save_btn", d=2)
-                    log.info("[CLOSE] ✓ Project closed")
-                    break
-                except:
-                    log.warn("[CLOSE] Click failed, retrying...")
-            else:
-                # Fallback: press N key
-                log.info(f"[CLOSE] Pressing N key (attempt {attempt+1})...")
-                keyboard.send("n")
-                time.sleep(2)
-                break
+        # Open File menu with Alt+F
+        log.info("[CLOSE] Opening File menu (Alt+F)...")
+        keyboard.send("alt+f")
+        time.sleep(1.0)  # Wait for menu to open
         
-        # === SAFETY CLEANUP ===
-        log.info("[CLOSE] Safety cleanup...")
-        keyboard.send("escape")
-        time.sleep(0.5)
-        keyboard.send("escape")
-        time.sleep(0.5)
-        
-        # One more Ctrl+W + N just in case
+        # Close with Ctrl+W
+        log.info("[CLOSE] Closing window (Ctrl+W)...")
         keyboard.send("ctrl+w")
-        time.sleep(1)
-        keyboard.send("n")
-        time.sleep(1)
+        time.sleep(2.0)  # Wait for save dialog to appear
+        
+        # Handle save dialog - click No or press N
+        if self._has("render_no_save_btn"):
+            log.info("[CLOSE] Clicking 'No' button for render window...")
+            try:
+                # Give button time to appear and be clickable
+                time.sleep(1.0)
+                self._click("render_no_save_btn", d=2.0)
+                log.info("[CLOSE] ✓ Render window closed via button")
+            except:
+                log.warn("[CLOSE] Button click failed, using keyboard...")
+                keyboard.send("n")
+                time.sleep(1.0)
+        else:
+            log.info("[CLOSE] Pressing 'N' key...")
+            keyboard.send("n")
+            time.sleep(1.0)
+        
+        # === IMPORTANT: 10 second pause between closes ===
+        log.info("[CLOSE] Waiting 10 seconds before closing project...")
+        time.sleep(10.0)
+        
+        # === STEP 2: Close project file ===
+        log.info("[CLOSE] Step 2: Closing project file...")
+        
+        # Ensure Visualize still has focus
+        focus_visualize()
+        time.sleep(1.0)
+        
+        # Open File menu with Alt+F
+        log.info("[CLOSE] Opening File menu (Alt+F)...")
+        keyboard.send("alt+f")
+        time.sleep(1.0)  # Wait for menu to open
+        
+        # Close with Ctrl+W
+        log.info("[CLOSE] Closing project (Ctrl+W)...")
+        keyboard.send("ctrl+w")
+        time.sleep(2.0)  # Wait for save dialog to appear
+        
+        # Handle save dialog - click No or press N
+        if self._has("project_no_save_btn"):
+            log.info("[CLOSE] Clicking 'No' button for project...")
+            try:
+                # Give button time to appear and be clickable
+                time.sleep(1.0)
+                self._click("project_no_save_btn", d=2.0)
+                log.info("[CLOSE] ✓ Project closed via button")
+            except:
+                log.warn("[CLOSE] Button click failed, using keyboard...")
+                keyboard.send("n")
+                time.sleep(1.0)
+        else:
+            log.info("[CLOSE] Pressing 'N' key...")
+            keyboard.send("n")
+            time.sleep(1.0)
+        
+        # === Final cleanup ===
+        log.info("[CLOSE] Final cleanup...")
+        time.sleep(2.0)
+        keyboard.send("escape")  # Clear any lingering dialogs
+        time.sleep(0.5)
         
         log.info("[CLOSE] ✓ Close sequence complete")
 
