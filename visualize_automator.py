@@ -538,7 +538,7 @@ class VisualizeDriver:
         keyboard.send("ctrl+r")
         time.sleep(3)
         
-        # Click Next 4 times to reach Job Settings page
+        # Click Next exactly 4 times with small pauses between clicks
         log.info("[WIZ] Clicking Next 4 times to reach Job Settings page...")
         for i in range(4):
             if not self._has("wizard_next_or_render"):
@@ -546,17 +546,10 @@ class VisualizeDriver:
                 return
             
             log.info(f"[WIZ] Next click {i+1}/4...")
+            self._click("wizard_next_or_render", d=0.3)  # 0.3 second pause after each click
             
-            # Click the button
-            self._click("wizard_next_or_render", d=1.0)
-            
-            # Keyboard fallback to ensure the click registered
-            time.sleep(0.5)
-            keyboard.send("enter")
-            time.sleep(1.5)  # Wait for page transition
-            
-        # Now we should be on the Job Settings page with job name field visible
-        time.sleep(1.0)  # Extra pause to ensure page is fully loaded
+        # Now we should be on the Job Settings page
+        time.sleep(1.0)  # Give the final page a moment to load completely
         
         # Set job name
         log.info("[WIZ] Setting job name...")
