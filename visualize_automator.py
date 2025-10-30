@@ -538,17 +538,25 @@ class VisualizeDriver:
         keyboard.send("ctrl+r")
         time.sleep(3)
         
-        # Navigate wizard pages carefully to avoid premature render
-        log.info("[WIZ] Navigating wizard pages...")
-        
-        # First Next: Welcome -> Job Settings page
-        log.info("[WIZ] Page 1 -> Page 2 (Job Settings)...")
-        if not self._has("wizard_next_or_render"):
-            log.error("[WIZ] No wizard_next_or_render point saved")
-            return
-        
-        # Click once and wait for page transition
-        self._click("wizard_next_or_render", d=3.0)
+        # Click Next 4 times to reach Job Settings page
+        log.info("[WIZ] Clicking Next 4 times to reach Job Settings page...")
+        for i in range(4):
+            if not self._has("wizard_next_or_render"):
+                log.error("[WIZ] No wizard_next_or_render point saved")
+                return
+            
+            log.info(f"[WIZ] Next click {i+1}/4...")
+            
+            # Click the button
+            self._click("wizard_next_or_render", d=1.0)
+            
+            # Keyboard fallback to ensure the click registered
+            time.sleep(0.5)
+            keyboard.send("enter")
+            time.sleep(1.5)  # Wait for page transition
+            
+        # Now we should be on the Job Settings page with job name field visible
+        time.sleep(1.0)  # Extra pause to ensure page is fully loaded
         
         # Set job name
         log.info("[WIZ] Setting job name...")
@@ -599,13 +607,9 @@ class VisualizeDriver:
                 time.sleep(2.5)
         
         log.info("[WIZ] ✓ Output folder set")
-        
-        # Second Next: Job Settings -> Camera Selection page
-        log.info("[WIZ] Page 2 -> Page 3 (Camera Selection)...")
-        self._click("wizard_next_or_render", d=3.0)  # Wait for page transition
 
 
-        # Select cameras
+        # Select cameras (still on same page)
         log.info("[WIZ] Selecting cameras...")
         self._click("cameras_dropdown", d=2)
         time.sleep(0.4)
@@ -616,10 +620,10 @@ class VisualizeDriver:
         time.sleep(0.4)
         keyboard.send("esc")
         log.info("[WIZ] ✓ All cameras selected")
-        time.sleep(2.0)  # Reduced from 8.0 - just need page to stabilize
+        time.sleep(2.0)  # Let the camera selection register
         
-        # Final click to start render
-        log.info("[WIZ] Page 3 -> Start Render...")
+        # Click Render button (same location as Next button)
+        log.info("[WIZ] Clicking Render button to start...")
         self._click("wizard_next_or_render", d=3)
         log.info("[WIZ] ✓ Render started!")
 
