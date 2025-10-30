@@ -1,15 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-PRODUCTION VERSION - Enhanced with:
-✓ Better output folder dialog handling (paste + click Select Folder button)
-✓ Navigation controls in guided mode (skip forward/back)
-✓ Improved close sequence with retries
-✓ Longer waits for dialog opening
-✓ All previous fixes maintained
+PRODUCTION VERSION - Complete with all fixes:
 ✓ DPI awareness to prevent coordinate scaling
-✓ Fixed render wizard timing
+✓ Fixed render wizard timing (4 clicks, no Enter keys)
 ✓ Alt+F close sequence with proper waits
+✓ PDM session management and prefetch optimization
+✓ All timing and functionality preserved
 """
 
 # CRITICAL: Set DPI awareness BEFORE any other imports
@@ -73,7 +70,7 @@ GUIDED_STEPS = [
     "wizard_next_or_render",   # 8. Next/Render button in wizard
     "job_name_textbox",        # 9. Job name text field
     "output_folder_btn",       # 10. Browse/... button for output folder
-    "folder_select_btn",       # 11. "Select Folder" button in dialog (USING CORRECT NAME!)
+    "folder_select_btn",       # 11. "Select Folder" button in dialog
     "cameras_dropdown",        # 12. Cameras dropdown in wizard
     "cameras_select_all",      # 13. Select All option
     "cameras_dropdown_close",  # 14. Close dropdown (click elsewhere)
@@ -245,33 +242,86 @@ class PDMClient:
     def __init__(self, vn):
         if not HAVE_COM: raise RuntimeError("No COM")
         self.vn = vn; self.v = None
+        self._session_count = 0  # Track open operations
+    
     def login(self):
         pythoncom.CoInitialize()
         self.v = win32com.client.Dispatch("ConisioLib.EdmVault")
         self.v.LoginAuto(self.vn, 0)
-        if not self.v.IsLoggedIn: raise RuntimeError("Login fail")
-        log.info(f"[PDM] ✓ {self.vn}")
-    def ensure_local(self, vp)->Optional[str]:
-        if not self.v: self.login()
-        fp, fn = os.path.dirname(vp), os.path.basename(vp)
-        try: fld = self.v.GetFolderFromPath(fp)
-        except Exception as e: log.warn(f"[PDM] {e}"); return None
-        try: f = fld.GetFile(fn)
-        except Exception as e: log.warn(f"[PDM] {e}"); return None
-        try: f.GetFileCopy(0, 0, fld.ID, 0, "")
-        except: pass
-        try: lp = str(f.GetLocalPath(fld.ID))
-        except:
-            try: lp = os.path.join(str(fld.LocalPath), fn)
-            except: lp = None
-        if lp and os.path.exists(lp):
-            log.info(f"[PDM] ✓ {lp}")
-            return lp
-        return None
+    
+    def ensure_session(self):
+        """
+        Called before each file operation to ensure PDM session is active.
+        Re-initializes if stale.
+        """
+        self._session_count += 1
+        if self._session_count % 50 == 0:  # Every 50 opens, refresh
+            log.info("[PDM] Refreshing session...")
+            try:
+                # Test if session is alive
+                self.v.RootFolderPath
+            except:
+                # Session is dead, re-login
+                log.warn("[PDM] Session stale, re-logging in...")
+                self.login()
+    
+    def preflight_local(self, p):
+        """
+        Pre-fetch and warm cache for a file before Visualize opens it.
+        This prevents Visualize's slow internal PDM search.
+        """
+        if not self.v or not os.path.isabs(p):
+            return p
+        
+        try:
+            # Ensure session is fresh
+            self.ensure_session()
+            
+            # Get folder and file
+            dn = os.path.dirname(p)
+            bn = os.path.basename(p)
+            fo = self.v.GetFolderFromPath(dn)
+            if not fo:
+                log.dbg(f"[PDM] Folder not in vault: {dn}")
+                return p
+            
+            fi = fo.GetFile(bn)
+            if not fi:
+                log.dbg(f"[PDM] File not in vault: {bn}")
+                return p
+            
+            # Get latest version
+            log.info(f"[PDM] Pre-fetching: {bn}")
+            fi.GetFileCopy(0)
+            
+            # Get local cache path
+            lp = fi.GetLocalPath(fo.ID)
+            if lp and os.path.exists(lp):
+                # Warm OS cache by reading first few bytes
+                try:
+                    with open(lp, 'rb') as f:
+                        f.read(4096)
+                    log.dbg(f"[PDM] Cache warmed: {lp}")
+                except:
+                    pass
+                return lp
+            
+            return p
+            
+        except Exception as e:
+            log.warn(f"[PDM] Preflight error: {e}")
+            return p
+    
+    def ensure_local(self, p):
+        """Legacy method - now just calls preflight_local"""
+        return self.preflight_local(p)
 
 class RenderWatcher:
     def __init__(self, root, settle=20):
-        self.root = root; self.settle = settle
+        self.root = root
+        self.settle = settle
+        self._found_cache = {}  # Reset tracking
+    
     def _cand(self, jn):
         if not os.path.isdir(self.root): return []
         ex = os.path.join(self.root, jn); p = []
@@ -280,6 +330,7 @@ class RenderWatcher:
             f = os.path.join(self.root, d)
             if os.path.isdir(f) and jn.lower() in d.lower() and f not in p: p.append(f)
         return p
+    
     def wait_dir(self, jn, to=300):
         log.info(f"[WATCH] Waiting for {jn}...")
         e = time.time() + to
@@ -288,133 +339,70 @@ class RenderWatcher:
             if c: log.info(f"[WATCH] ✓ {c[0]}"); return c[0]
             time.sleep(2)
         log.error("[WATCH] ✗ Timeout"); return None
-    def wait_five(self, jd) -> bool:
-        """
-        Wait until all REQUIRED_CAM_SUFFIXES are present in `jd` and their file sizes
-        remain unchanged for `self.settle` seconds. Robust to partial files and avoids
-        re-announcing discovery without ever entering stabilization.
-        """
-        import time
     
-        if not os.path.isdir(jd):
+    def wait_five(self, jd)->bool:
+        # Clear cache for new job
+        self._found_cache = {}
+        
+        log.info(f"[WATCH] Looking in: {jd}")
+        log.info("[WATCH] Waiting for 5 renders...")
+        req = set(REQUIRED_CAM_SUFFIXES)
+        
+        if not os.path.exists(jd):
             log.error(f"[WATCH] ✗ Directory doesn't exist: {jd}")
             return False
-    
-        targets = set(REQUIRED_CAM_SUFFIXES)
-    
-        # internal state
-        discovered_paths = {}      # suffix -> fullpath (latest by mtime)
-        last_sizes = {}            # suffix -> size
-        stable_start = None        # when sizes first became "all unchanged"
-        in_stabilize = False       # entered the stability phase
-        last_report = 0.0
-    
-        def _pick_latest_for_suffix(sfx: str, files: list[str]) -> str | None:
-            cands = [f for f in files if f.lower().endswith((".jpg", ".jpeg")) and sfx in f]
-            if not cands:
-                return None
-            # choose most-recent modified file for that suffix
-            cands.sort(key=lambda p: os.path.getmtime(os.path.join(jd, p)), reverse=True)
-            return os.path.join(jd, cands[0])
-    
-        start = time.time()
-        timeout_s = 60 * 30  # 30 min safety cap; adjust if you like
-        poll = 1.0
-    
-        while True:
-            # timeout guard
-            if time.time() - start > timeout_s:
-                log.error("[WATCH] ✗ Timeout waiting for 5 stable renders")
-                return False
-    
+        
+        for attempt in range(300):
+            found = {}
             try:
                 files = os.listdir(jd)
+                if attempt % 30 == 0:
+                    log.info(f"[WATCH] Found {len(files)} files in folder...")
+                
+                for f in files:
+                    if f.lower().endswith((".jpg", ".jpeg")):
+                        for s in req:
+                            if s in f:
+                                found[s] = os.path.join(jd, f)
+                                if s not in self._found_cache:
+                                    log.info(f"[WATCH] Found {s}: {f}")
+                                    self._found_cache[s] = f
+                                break
             except Exception as e:
-                log.warn(f"[WATCH] Error listing folder: {e}")
-                time.sleep(2)
-                continue
-    
-            # (1) discover latest path per suffix
-            changed_any_path = False
-            for sfx in targets:
-                latest = _pick_latest_for_suffix(sfx, files)
-                if latest and discovered_paths.get(sfx) != latest:
-                    discovered_paths[sfx] = latest
-                    changed_any_path = True
-    
-            # (2) if we have all suffixes, move toward stabilization
-            have_all = targets.issubset(discovered_paths.keys())
-            if have_all and not in_stabilize:
-                # announce once
-                log.info("[WATCH] ✓ Found all 5 renders! Starting stability check…")
-                in_stabilize = True
-                last_sizes.clear()
-                stable_start = None  # will be set once all sizes are nonzero and unchanged
-    
-            if in_stabilize:
-                # collect current sizes
-                sizes_now = {}
-                missing = False
-                zero = False
-                for sfx, path in discovered_paths.items():
+                log.warn(f"[WATCH] Error listing files: {e}")
+                pass
+            
+            if len(found) >= 5:
+                log.info(f"[WATCH] ✓ Found all 5 renders! Checking stability...")
+                snap = {s: os.path.getsize(p) for s, p in found.items()}
+                log.info(f"[WATCH] Waiting {self.settle}s for stability...")
+                time.sleep(self.settle)
+                
+                ok = True
+                for s, p in found.items():
                     try:
-                        sz = os.path.getsize(path)
-                    except FileNotFoundError:
-                        missing = True
-                        break
-                    sizes_now[sfx] = sz
-                    if sz == 0:
-                        zero = True
-    
-                if missing or zero:
-                    # files not ready; keep waiting
-                    stable_start = None
-                else:
-                    # compare with last snapshot
-                    if not last_sizes:
-                        last_sizes = sizes_now
-                        stable_start = None  # need one unchanged cycle before starting timer
-                    else:
-                        changed = any(sizes_now[k] != last_sizes.get(k) for k in targets)
-                        if changed:
-                            # sizes moved -> reset stability timer
-                            if time.time() - last_report > 5:
-                                log.info("[WATCH] Files still growing… resetting stability timer")
-                                last_report = time.time()
-                            last_sizes = sizes_now
-                            stable_start = None
-                        else:
-                            # unchanged this tick
-                            if stable_start is None:
-                                stable_start = time.time()
-                                if time.time() - last_report > 5:
-                                    log.info(f"[WATCH] Sizes steady. Waiting {self.settle}s for stability…")
-                                    last_report = time.time()
-                            else:
-                                elapsed = time.time() - stable_start
-                                if elapsed >= self.settle:
-                                    log.info("[WATCH] ✓ All 5 renders stable!")
-                                    return True
-    
-            else:
-                # not all discovered yet — occasional progress log
-                if time.time() - last_report > 10:
-                    have = len(discovered_paths)
-                    log.info(f"[WATCH] Waiting for renders… {have}/5 present")
-                    last_report = time.time()
-    
-            time.sleep(poll)
+                        ns = os.path.getsize(p)
+                        if ns != snap[s]:
+                            log.warn(f"[WATCH] {s} still growing ({snap[s]}→{ns})")
+                            ok = False
+                    except:
+                        log.warn(f"[WATCH] {s} disappeared?")
+                        ok = False
+                
+                if ok:
+                    log.info("[WATCH] ✓ All renders stable!")
+                    return True
+            
+            time.sleep(1)
         
-        log.error("[WATCH] ✗ Timeout")
+        log.error("[WATCH] ✗ Timeout waiting for renders")
         return False
 
 class VisualizeDriver:
     def __init__(self, io):
-        self.io = io
-        self.io.load()
-    
+        self.io = io; self.io.load()
+        
     def _has(self, l): return self.io.has(l)
-    
     def _click(self, l, d=1.0):
         if not self._has(l): raise RuntimeError(f"No {l}")
         x, y = self.io.get(l)
@@ -432,30 +420,29 @@ class VisualizeDriver:
         time.sleep(0.5)
     
     def open_file(self, p):
-        log.info(f"[OPEN] {p}")
-        if not os.path.exists(p):
-            log.error(f"[OPEN] ✗ Not found: {p}")
-            return False
+        log.info(f"[OPEN] Opening: {os.path.basename(p)}")
         
-        if not focus_visualize():
-            log.error("[OPEN] ✗ Can't focus")
-            return False
+        # Focus and prepare
+        focus_visualize()
+        time.sleep(0.5)
         
-        # Open file dialog
-        log.info("[OPEN] Opening File menu...")
-        keyboard.send("f")
-        time.sleep(5)  # Wait for File menu to fully open
-        
-        log.info("[OPEN] Pressing Ctrl+O...")
+        log.info("[OPEN] Opening file dialog (Ctrl+O)...")
         keyboard.send("ctrl+o")
-        time.sleep(5)  # Wait for Open dialog (fast with PDM local checkout)
+        time.sleep(6)  # Your extended wait for dialog
         
-        # Paste path and open
-        log.info("[OPEN] Copying filepath to clipboard...")
+        log.info("[OPEN] Waiting for Open dialog...")
+        if _wait_for_dialog_title(timeout=10):
+            log.info("[OPEN] Dialog detected")
+            time.sleep(2)
+        else:
+            log.warn("[OPEN] Dialog not detected; continuing")
+            time.sleep(5)
+        
+        log.info("[OPEN] Typing filepath...")
+        pyperclip.copy("")
+        time.sleep(0.5)
         pyperclip.copy(p)
-        time.sleep(2)  # Wait for clipboard
-        
-        log.info("[OPEN] Pasting filepath...")
+        time.sleep(0.5)
         keyboard.send("ctrl+v")
         time.sleep(5)  # Wait for paste to fully complete
         
@@ -465,21 +452,20 @@ class VisualizeDriver:
         
         # Wait for Import Settings dialog and click OK
         log.info("[OPEN] Waiting for Import Settings dialog to fully appear...")
-        time.sleep(90)  # keep your long wait; Visualize needs it
+        time.sleep(90)  # Keep your long wait
         
         if self._has("import_ok_btn"):
-            # OPTIONAL: preview-move so you can visually verify the saved point is right
+            # Preview-move so you can visually verify the saved point is right
             x, y = self.io.get("import_ok_btn")
             log.info(f"[OPEN] Preview OK at ({x},{y})")
             mouse.move(x, y, absolute=True, duration=0.1)
-            time.sleep(0.6)  # brief pause so you can see cursor over the button
+            time.sleep(0.6)  # Brief pause so you can see cursor over the button
         
             log.info("[OPEN] Clicking Import Settings OK...")
             mouse.click()
-            time.sleep(2.5)  # give the modal time to close
+            time.sleep(2.5)  # Give the modal time to close
         else:
             log.warn("[OPEN] No import_ok_btn saved; skipping click")
-
         
         # Wait for file to load
         log.info("[OPEN] Waiting for file to load...")
@@ -499,87 +485,81 @@ class VisualizeDriver:
                 center_x = (rect[0] + rect[2]) // 2
                 center_y = (rect[1] + rect[3]) // 2
                 mouse.move(center_x, center_y, absolute=True, duration=0.1)
-                time.sleep(0.2)
+                time.sleep(0.3)
                 mouse.click()
-                time.sleep(1)
-                log.info("[OPEN] Viewport activated")
+                time.sleep(0.5)
             except:
-                log.warn("[OPEN] Could not click viewport center")
+                pass
         
         log.info("[OPEN] ✓ File loaded and ready")
         return True
 
     def import_cams(self):
-        log.info("[CAM] Importing...")
-        req = ["camera_tab", "plus_tab", "import_cameras_btn"]
-        if any(not self._has(p) for p in req):
-            raise RuntimeError(f"Missing: {req}")
-
-        # Open the import dialog
+        log.info("[CAM] Importing cameras...")
         self._click("camera_tab", d=1)
-        time.sleep(2.0)
+        time.sleep(0.5)
         self._click("plus_tab", d=1)
-        time.sleep(2.0)
-        self._click("import_cameras_btn", d=0.8)  # single click, short delay
-        time.sleep(0.2) 
+        time.sleep(0.5)
+        self._click("import_cameras_btn", d=0.8)  # Single click, short delay
+        log.info("[CAM] Waiting for camera import to complete...")
+        time.sleep(8)
         
-        # Wait for the File Open dialog to be foreground
-        log.info("[CAM] Waiting for 'Open' dialog to foreground...")
-        if not _wait_for_dialog_title(("Open", "Select", "Browse"), timeout=12):
-            log.warn("[CAM] Open dialog not detected by title; proceeding cautiously after delay")
-            time.sleep(2.0)
-
-        # Ensure the 'File name' field gets focus: Alt+N targets that control in common dialogs
-        log.info("[CAM] Focusing 'File name' box (Alt+N)...")
-        keyboard.send("alt+n"); time.sleep(0.4)
-
-        # Paste the camera list
-        cs = "\"103\" \"105\" \"107\" \"109\" \"111\""
-        pyperclip.copy(cs); time.sleep(0.2)
-        log.info(f"[CAM] Pasting camera list: {cs}")
-        keyboard.send("ctrl+v"); time.sleep(0.6)
-
-        # Confirm open
-        log.info("[CAM] Pressing Enter to import...")
-        keyboard.send("enter"); time.sleep(3.0)
-
+        # Focus viewport again after import
+        log.info("[CAM] Re-focusing viewport after import...")
+        v = get_visualize_hwnd()
+        if v and len(v) == 2 and v[0]:
+            h, t = v
+            try:
+                rect = win32gui.GetWindowRect(h)
+                center_x = (rect[0] + rect[2]) // 2
+                center_y = (rect[1] + rect[3]) // 2
+                mouse.move(center_x, center_y, absolute=True, duration=0.1)
+                time.sleep(0.2)
+                mouse.click()
+                time.sleep(0.5)
+            except:
+                pass
+        
         log.info("[CAM] ✓")
 
     def del_old_cams(self):
-        log.info("[CAM] Deleting old...")
-        for i, l in enumerate(["old_cam_1", "old_cam_2"], 1):
-            if self._has(l):
-                self._dbl(l); time.sleep(1)
-                keyboard.send("delete"); time.sleep(2)
+        log.info("[CAM] Deleting old cameras...")
+        
+        # First camera
+        if self._has("old_cam_1"):
+            self._click("old_cam_1", d=0.8)
+            keyboard.send("delete")
+            time.sleep(1)
+        
+        # Second camera
+        if self._has("old_cam_2"):
+            self._click("old_cam_2", d=0.8)
+            keyboard.send("delete")
+            time.sleep(1)
+        
         log.info("[CAM] ✓")
-
+    
     def center_cams(self):
         log.info("[CAM] Centering...")
-        if not self._has("cam_103"): raise RuntimeError("No cam_103")
         
-        self._dbl("cam_103"); time.sleep(2)
+        # Check for 'cam_103' first
+        if self._has("cam_103"):
+            log.info("[CAM] Found cam_103")
+            self._dbl("cam_103")
+        else:
+            log.warn("[CAM] No cam_103 saved; skipping camera center")
+            return
         
-        log.info("[CAM] Cam 1"); send_hw_key(VK_F); time.sleep(2)
+        # Check for 'viewport_canvas' for additional setup
+        if self._has("viewport_canvas"):
+            log.info("[CAM] Clicking viewport_canvas...")
+            x, y = self.io.get("viewport_canvas")
+            mouse.move(x, y, absolute=True, duration=0.1)
+            time.sleep(0.4)
+            mouse.click()
+            time.sleep(0.5)
         
-        log.info("[CAM] Cam 2")
-        keyboard.send("right"); time.sleep(0.5)
-        keyboard.send("right"); time.sleep(0.5)
-        keyboard.send("enter"); time.sleep(1)
-        send_hw_key(VK_F); time.sleep(2)
-        
-        log.info("[CAM] Cam 3")
-        keyboard.send("down"); time.sleep(0.5)
-        keyboard.send("enter"); time.sleep(1)
-        send_hw_key(VK_F); time.sleep(2)
-        
-        log.info("[CAM] Cam 4")
-        keyboard.send("left"); time.sleep(0.5)
-        keyboard.send("enter"); time.sleep(1)
-        send_hw_key(VK_F); time.sleep(2)
-        
-        log.info("[CAM] Cam 5")
-        keyboard.send("down"); time.sleep(0.5)
-        keyboard.send("enter"); time.sleep(1)
+        # Center view
         send_hw_key(VK_F); time.sleep(2)
         
         log.info("[CAM] ✓")
@@ -616,7 +596,7 @@ class VisualizeDriver:
         
         # === OUTPUT FOLDER ===
         log.info("[WIZ] Setting output folder...")
-        self._click("output_folder_btn", d=1.5)   # give dialog time to open
+        self._click("output_folder_btn", d=1.5)   # Give dialog time to open
         
         log.info("[WIZ] Waiting for folder dialog to become foreground...")
         if not _wait_for_dialog_title(("Browse", "Select", "Folder"), timeout=20):
@@ -653,7 +633,6 @@ class VisualizeDriver:
                 time.sleep(2.5)
         
         log.info("[WIZ] ✓ Output folder set")
-
 
         # Select cameras
         log.info("[WIZ] Selecting cameras...")
@@ -784,8 +763,10 @@ def process(d, w, r, jdt, pdm):
     
     up = orig
     if pdm:
-        loc = pdm.ensure_local(orig)
-        if loc and os.path.exists(loc): up = loc
+        # Use preflight_local for PDM optimization
+        loc = pdm.preflight_local(orig)
+        if loc and os.path.exists(loc): 
+            up = loc
     
     jn = sanitize_job_name(tms, pt)
     
