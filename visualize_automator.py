@@ -425,6 +425,9 @@ class VisualizeDriver:
         # Focus and prepare
         focus_visualize()
         time.sleep(0.5)
+        log.info("[OPEN] Opening file menu (alt+F)...")
+        keyboard.send("alt+f")
+        time.sleep(0.5)
         
         log.info("[OPEN] Opening file dialog (Ctrl+O)...")
         keyboard.send("ctrl+o")
@@ -452,7 +455,7 @@ class VisualizeDriver:
         
         # Wait for Import Settings dialog and click OK
         log.info("[OPEN] Waiting for Import Settings dialog to fully appear...")
-        time.sleep(90)  # Keep your long wait
+        time.sleep(180)  # Keep your long wait
         
         if self._has("import_ok_btn"):
             # Preview-move so you can visually verify the saved point is right
