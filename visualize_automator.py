@@ -288,56 +288,122 @@ class RenderWatcher:
             if c: log.info(f"[WATCH] ✓ {c[0]}"); return c[0]
             time.sleep(2)
         log.error("[WATCH] ✗ Timeout"); return None
-    def wait_five(self, jd)->bool:
-        log.info(f"[WATCH] Looking in: {jd}")
-        log.info("[WATCH] Waiting for 5 renders...")
-        req = set(REQUIRED_CAM_SUFFIXES)
-        
-        if not os.path.exists(jd):
+    def wait_five(self, jd) -> bool:
+        """
+        Wait until all REQUIRED_CAM_SUFFIXES are present in `jd` and their file sizes
+        remain unchanged for `self.settle` seconds. Robust to partial files and avoids
+        re-announcing discovery without ever entering stabilization.
+        """
+        import time
+    
+        if not os.path.isdir(jd):
             log.error(f"[WATCH] ✗ Directory doesn't exist: {jd}")
             return False
-        
-        for attempt in range(300):
-            found = {}
+    
+        targets = set(REQUIRED_CAM_SUFFIXES)
+    
+        # internal state
+        discovered_paths = {}      # suffix -> fullpath (latest by mtime)
+        last_sizes = {}            # suffix -> size
+        stable_start = None        # when sizes first became "all unchanged"
+        in_stabilize = False       # entered the stability phase
+        last_report = 0.0
+    
+        def _pick_latest_for_suffix(sfx: str, files: list[str]) -> str | None:
+            cands = [f for f in files if f.lower().endswith((".jpg", ".jpeg")) and sfx in f]
+            if not cands:
+                return None
+            # choose most-recent modified file for that suffix
+            cands.sort(key=lambda p: os.path.getmtime(os.path.join(jd, p)), reverse=True)
+            return os.path.join(jd, cands[0])
+    
+        start = time.time()
+        timeout_s = 60 * 30  # 30 min safety cap; adjust if you like
+        poll = 1.0
+    
+        while True:
+            # timeout guard
+            if time.time() - start > timeout_s:
+                log.error("[WATCH] ✗ Timeout waiting for 5 stable renders")
+                return False
+    
             try:
                 files = os.listdir(jd)
-                if attempt % 30 == 0:
-                    log.info(f"[WATCH] Found {len(files)} files in folder...")
-                
-                for f in files:
-                    if f.lower().endswith((".jpg", ".jpeg")):
-                        for s in req:
-                            if s in f:
-                                found[s] = os.path.join(jd, f)
-                                log.dbg(f"[WATCH] Found {s}: {f}")
-                                break
             except Exception as e:
-                log.warn(f"[WATCH] Error listing files: {e}")
-                pass
-            
-            if len(found) >= 5:
-                log.info(f"[WATCH] ✓ Found all 5 renders! Checking stability...")
-                snap = {s: os.path.getsize(p) for s, p in found.items()}
-                log.info(f"[WATCH] Waiting {self.settle}s for stability...")
-                time.sleep(self.settle)
-                
-                ok = True
-                for s, p in found.items():
+                log.warn(f"[WATCH] Error listing folder: {e}")
+                time.sleep(2)
+                continue
+    
+            # (1) discover latest path per suffix
+            changed_any_path = False
+            for sfx in targets:
+                latest = _pick_latest_for_suffix(sfx, files)
+                if latest and discovered_paths.get(sfx) != latest:
+                    discovered_paths[sfx] = latest
+                    changed_any_path = True
+    
+            # (2) if we have all suffixes, move toward stabilization
+            have_all = targets.issubset(discovered_paths.keys())
+            if have_all and not in_stabilize:
+                # announce once
+                log.info("[WATCH] ✓ Found all 5 renders! Starting stability check…")
+                in_stabilize = True
+                last_sizes.clear()
+                stable_start = None  # will be set once all sizes are nonzero and unchanged
+    
+            if in_stabilize:
+                # collect current sizes
+                sizes_now = {}
+                missing = False
+                zero = False
+                for sfx, path in discovered_paths.items():
                     try:
-                        ns = os.path.getsize(p)
-                        if ns != snap[s]:
-                            log.warn(f"[WATCH] {s} still growing ({snap[s]}→{ns})")
-                            ok = False
-                    except:
-                        ok = False
-                
-                if ok:
-                    log.info("[WATCH] ✓ All stable!")
-                    return True
+                        sz = os.path.getsize(path)
+                    except FileNotFoundError:
+                        missing = True
+                        break
+                    sizes_now[sfx] = sz
+                    if sz == 0:
+                        zero = True
+    
+                if missing or zero:
+                    # files not ready; keep waiting
+                    stable_start = None
                 else:
-                    log.info("[WATCH] Still rendering, waiting...")
-            
-            time.sleep(2)
+                    # compare with last snapshot
+                    if not last_sizes:
+                        last_sizes = sizes_now
+                        stable_start = None  # need one unchanged cycle before starting timer
+                    else:
+                        changed = any(sizes_now[k] != last_sizes.get(k) for k in targets)
+                        if changed:
+                            # sizes moved -> reset stability timer
+                            if time.time() - last_report > 5:
+                                log.info("[WATCH] Files still growing… resetting stability timer")
+                                last_report = time.time()
+                            last_sizes = sizes_now
+                            stable_start = None
+                        else:
+                            # unchanged this tick
+                            if stable_start is None:
+                                stable_start = time.time()
+                                if time.time() - last_report > 5:
+                                    log.info(f"[WATCH] Sizes steady. Waiting {self.settle}s for stability…")
+                                    last_report = time.time()
+                            else:
+                                elapsed = time.time() - stable_start
+                                if elapsed >= self.settle:
+                                    log.info("[WATCH] ✓ All 5 renders stable!")
+                                    return True
+    
+            else:
+                # not all discovered yet — occasional progress log
+                if time.time() - last_report > 10:
+                    have = len(discovered_paths)
+                    log.info(f"[WATCH] Waiting for renders… {have}/5 present")
+                    last_report = time.time()
+    
+            time.sleep(poll)
         
         log.error("[WATCH] ✗ Timeout")
         return False
